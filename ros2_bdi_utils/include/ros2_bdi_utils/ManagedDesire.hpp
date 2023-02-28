@@ -41,6 +41,12 @@ namespace BDIManaged
             
             void setName(const std::string& name){name_ = std::string{name};};
             std::string getName() const {return name_;};
+            std::string getNameValue() const {
+                std::string dvalue = "";
+                for(auto bv : value_)
+                    dvalue += "(" + bv.getName() + " " + bv.getParamsJoined() + ")";
+                return name_ + ": " + dvalue;
+            };
             std::vector<ManagedBelief> getValue() const {return value_;};
             float getPriority() const {return priority_;}
             float getDeadline() const {return deadline_;}
@@ -74,9 +80,21 @@ namespace BDIManaged
 
             // return true if otherDesire presents the same exact name, priority and desire group, belief set should be a subset of the belief set of otherDesire
             bool equalsOrSupersetIgnoreAdvancedInfo(const ManagedDesire& otherDesire);
+            
+            /* Base boosting conditions (name,priority, desire group) checked wrt otherDesire*/
+            bool baseBoostingConditionsMatch(const BDIManaged::ManagedDesire& otherDesire);
+
+            /* Given another desire check whether is matching for boosting:
+                -NO:  return empty array
+                -YES: return array with additional boosting value
+            */
+            std::vector<BDIManaged::ManagedBelief> computeBoostingValue(const BDIManaged::ManagedDesire& otherDesire);
 
             // return true if otherDesire is augmented to the current one
             bool boostDesire(const ManagedDesire& otherDesire);
+
+            // return true if otherDesire has same priority and desire group + its value is contained within the value of the called MG Desire
+            bool baseMatch(const ManagedDesire& otherDesire);
 
             /* substitute placeholders as per assignments map and return a new ManagedDesire instance*/
             ManagedDesire applySubstitution(const std::map<std::string, std::string> assignments) const;

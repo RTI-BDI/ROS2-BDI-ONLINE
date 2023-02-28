@@ -10,7 +10,7 @@
             condition_to_check:
               name: "{x}"
               pddl_type: 1
-              type: "plastic"
+              type: "paper"
 
           - check: "T"
             condition_to_check:
@@ -45,14 +45,14 @@
             condition_to_check:
               name: "{x}"
               pddl_type: 1
-              type: "plastic"
+              type: "paper"
 
           - check: "T"
             condition_to_check:
               name: "holding"
               pddl_type: 2
               params:
-                - "plastic_agent"
+                - "paper_agent"
                 - "{x}"
 
   reactive_rules:
@@ -96,11 +96,11 @@
       operation: ADD
       value:
         name: "patrol_{x}"
-        priority: 0.1
+        priority: 0.4
         deadline: 64
         value:
           - name: "in"
             pddl_type: 2
             params:
-              - "plastic_agent"
+              - "paper_agent"
               - "{x}"

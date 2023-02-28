@@ -54,7 +54,7 @@ from bdi_agent_core import *
                                     if they are not verified and the plan for the given desire cannot be carried on due to them
                                     (default value = false)
 
-            ** "reschedule_policy": string in {"NO_PREEMPT", "PREEMPT"}, otherwise "NO_PREEMPT"
+            ** "reschedule_policy": string in {"NO_PREEMPT", "PREEMPT", "CLEAN_PREEMPT"}, otherwise "NO_PREEMPT"
                                     to specify the reschedule policy
 
 
@@ -111,15 +111,20 @@ def AgentLaunchDescription(
     planning_mode = 'offline'
     if PLANNING_MODE_PARAM in init_params:
         planning_mode = init_params[PLANNING_MODE_PARAM] if init_params[PLANNING_MODE_PARAM] in ['offline', 'online'] else 'offline'
+    
+    planner = ['POPF']
+    if PLANNER_PARAM in init_params:
+        planner = init_params[PLANNER_PARAM] if init_params[PLANNER_PARAM] in ['POPF', 'JAVAFF'] else 'POPF'
 
     if planning_mode == 'online': # psys2 won't start its planner (by launch args passed)
         debug_javaff = (DEBUG_ACTIVE_NODES_PARAM in init_params) and ('javaff' in init_params[DEBUG_ACTIVE_NODES_PARAM])
         min_commit_steps_javaff = init_params[MIN_COMMIT_STEPS_PARAM] if (MIN_COMMIT_STEPS_PARAM in init_params) and isinstance(init_params[MIN_COMMIT_STEPS_PARAM], int) else 1
+        sim_to_n = init_params[SIM_TO_N_PARAM] if (SIM_TO_N_PARAM in init_params) and isinstance(init_params[SIM_TO_N_PARAM], int) else inf
         javaff_nodes = Node(
             package='javaff',
             executable='javaff_nodes',
             name='javaff_nodes',
-            arguments=('!!!{}={}!!!@@@{}={}@@@???'+ init_params[PDDL_FILE_PARAM] + '???').format(DEBUG_PARAM, debug_javaff, MIN_COMMIT_STEPS_PARAM, min_commit_steps_javaff),
+            arguments=('!!!{}={}!!!@@@{}={}@@@$$${}={}$$$???'+ init_params[PDDL_FILE_PARAM] + '???').format(DEBUG_PARAM, debug_javaff, MIN_COMMIT_STEPS_PARAM, min_commit_steps_javaff, SIM_TO_N_PARAM, sim_to_n),
             namespace=namespace,
             output='screen',
             parameters= []
@@ -140,6 +145,7 @@ def AgentLaunchDescription(
         launch_arguments={
             'model_file': init_params[PDDL_FILE_PARAM],
             'namespace': namespace,
+            'planner': planner,
             'planning_mode': planning_mode
             }.items()
     )

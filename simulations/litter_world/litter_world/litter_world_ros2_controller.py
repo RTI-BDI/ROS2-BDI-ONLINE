@@ -2,13 +2,22 @@
 
 import os.path
 import json
-from urllib import response
+import random
+import time
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.action import ActionServer
 
 from .tk_litter_world_thread import TkLitterWorldThread
+from .pose import MGPose
+from .move_trajectory import MGMoveTrajectory
+
+from ros2_bdi_interfaces.msg import Belief
+from ros2_bdi_interfaces.msg import BeliefSet
+from ros2_bdi_interfaces.msg import Desire
+from ros2_bdi_interfaces.msg import BDIActionExecutionInfoMin
+from ros2_bdi_interfaces.msg import BDIPlanExecutionInfoMin
 
 from litter_world_interfaces.msg import Pose
 from litter_world_interfaces.action import CmdPose
@@ -16,7 +25,9 @@ from litter_world_interfaces.msg import GridRowStatus
 from litter_world_interfaces.msg import GridStatus   
 from litter_world_interfaces.action import CmdLoad
 
-from .cell_types import PAPER_LITTER_CELL, PLASTIC_AGENT_CELL, PAPER_AGENT_CELL, PLASTIC_LITTER_CELL
+from std_msgs.msg import Bool
+
+from .cell_types import EMPTY_CELL, OBSTACLE_CELL, PAPER_BIN_CELL, PAPER_LITTER_CELL, PLASTIC_AGENT_CELL, PAPER_AGENT_CELL, PLASTIC_BIN_CELL, PLASTIC_LITTER_CELL
 
 class LitterWorldROS2Controller(Node):
 
@@ -25,10 +36,18 @@ class LitterWorldROS2Controller(Node):
         self.counter_ = 0
         self.declare_parameter("init_world", "{}")
         self.declare_parameter("upd_interval", 3000)
+        self.declare_parameter("show_agent_view", '')
+        self.declare_parameter("world_size_px", 768)
     
     def get_upd_interval(self):
         return self.get_parameter("upd_interval").value
+
+    def get_show_agent_view(self):
+        return self.get_parameter("show_agent_view").value
     
+    def get_world_size_px(self):
+        return self.get_parameter("world_size_px").value
+
     def get_init_world_json(self):
         init_world_filepath = self.get_parameter("init_world").value
         if not os.path.isfile(init_world_filepath):
@@ -42,6 +61,13 @@ class LitterWorldROS2Controller(Node):
     def init_ros2_controller(self, tk_litter_world_thread):
         self.tk_litter_world_thread_ = tk_litter_world_thread
         self.litter_world_status_publisher_ = self.create_publisher(GridStatus, "litter_world_status", 10) # create topic to periodically notify about grid map status
+        # self.plastic_agent_patrol_desire_add = self.create_publisher(Desire, "/plastic_agent/add_desire", 10) #
+        # self.paper_agent_patrol_desire_add = self.create_publisher(Desire, "/paper_agent/add_desire", 10) #
+        
+        if self.get_parameter("show_agent_view").value == 'plastic_agent' or self.get_parameter("show_agent_view").value == 'paper_agent':
+            monitoring_agent = self.get_parameter("show_agent_view").value
+            self.agent_intention_subscriber_ = self.create_subscription(BDIPlanExecutionInfoMin, "/"+monitoring_agent+"/current_intentions", self.callback_pa_agent_intentions, 10)
+            self.agent_bset_subscriber_ = self.create_subscription(BeliefSet, "/"+monitoring_agent+"/belief_set", self.callback_pa_agent_bset, 10)
 
         self.plastic_agent_cmd_pose_ = ActionServer(self, CmdPose, 'cmd_plastic_agent_move', self.callback_cmd_plastic_agent_move)
         self.paper_agent_cmd_pose_ = ActionServer(self, CmdPose, 'cmd_paper_agent_move', self.callback_cmd_paper_agent_move)
@@ -49,22 +75,149 @@ class LitterWorldROS2Controller(Node):
         self.paper_agent_cmd_upd_holding_ = ActionServer(self, CmdLoad, "cmd_paper_agent_hold", self.callback_cmd_paper_agent_hold)
         self.remove_litter_cmd_pose_ = ActionServer(self, CmdPose, "cmd_remove_litter", self.callback_cmd_remove_litter)
         
-        self.create_timer(0.25, self.litter_world_status_cb) #4Hz
+        self.building_bt_subscriber_ = self.create_subscription(Bool, "/"+monitoring_agent+"/computing_bt", self.callback_computing_bt_agent, 10)
+
+        self.create_timer(self.get_upd_interval()/2000, self.litter_world_status_cb) #Retrieve world status two times per epoch
         
         self.get_logger().info("Litter world has been started")
     
+    def callback_computing_bt_agent(self, msg:Bool):
+        if msg.data:#start computing bt
+            self.get_logger().info("Pause simulation")
+            self.tk_litter_world_thread_.pause_sim()
+        else:#stop computing bt
+            self.get_logger().info("Play simulation")
+            self.tk_litter_world_thread_.play_sim()
+
+    def callback_pa_agent_bset(self, msg:BeliefSet):
+        plastic_bin_pose = MGPose(-1,-1)
+        paper_bin_pose = MGPose(-1,-1)
+        plastic_agent_pose = MGPose(-1,-1)
+        paper_agent_pose = MGPose(-1,-1)
+        obstacles = []
+        paper_litter_poses = []
+        plastic_litter_poses = []
+        detection_depth = 0
+
+        columns = 0
+        rows = 0
+        for belief in msg.value:
+            if belief.type == 'cell':
+                cell_pose = self.extract_pose_from_cell_name(belief.name)
+                columns = max(columns, cell_pose.y+1)
+                rows = max(rows, cell_pose.x+1)
+        
+        current_map = [[OBSTACLE_CELL for x in range(columns)] for x in range(rows)]
+        
+        for belief in msg.value:
+            if belief.name == 'detection_depth':
+                detection_depth = int(belief.value)
+            
+            if belief.name == 'bin_pose':
+                if belief.params[0] == 'plastic_b':
+                    plastic_bin_pose = self.extract_pose_from_cell_name(belief.params[1])
+                    current_map[plastic_bin_pose.x][plastic_bin_pose.y] = PLASTIC_BIN_CELL
+                elif belief.params[0] == 'paper_b':
+                    paper_bin_pose = self.extract_pose_from_cell_name(belief.params[1])
+                    current_map[paper_bin_pose.x][paper_bin_pose.y] = PAPER_BIN_CELL
+            
+            if belief.name == 'in':
+                if belief.params[0] == 'plastic_agent':
+                    plastic_agent_pose = self.extract_pose_from_cell_name(belief.params[1])
+                    current_map[plastic_agent_pose.x][plastic_agent_pose.y] = PLASTIC_AGENT_CELL
+                elif belief.params[0] == 'paper_agent':
+                    paper_agent_pose = self.extract_pose_from_cell_name(belief.params[1])
+                    current_map[paper_agent_pose.x][paper_agent_pose.y] = PAPER_AGENT_CELL
+            
+            if belief.name == 'litter_pose':
+                if belief.params[0].find('pla') == 0:
+                    plastic_litter_poses.append(self.extract_pose_from_cell_name(belief.params[1]))
+                elif belief.params[0].find('pap') == 0:
+                    paper_litter_poses.append(self.extract_pose_from_cell_name(belief.params[1]))
+            
+            if belief.name == 'free':
+                empty_cell_pose = self.extract_pose_from_cell_name(belief.params[0])
+                current_map[empty_cell_pose.x][empty_cell_pose.y] = EMPTY_CELL
+        
+        for x in range(0, rows):
+            for y in range(0, columns):
+                if current_map[x][y] == OBSTACLE_CELL:
+                    obstacles.append(MGPose(x,y))
+        
+        init_poses = {
+            "plastic_agent": plastic_agent_pose,
+            "paper_agent": paper_agent_pose,
+            "plastic_bin": plastic_bin_pose,
+            "paper_bin": paper_bin_pose,
+            "persons": []
+        }
+        
+        self.tk_litter_world_thread_.update_pa_world(obstacles, plastic_litter_poses, paper_litter_poses, init_poses, detection_depth)
+
+    def extract_pose_from_cell_name(self, cell_name:str):
+        args = cell_name.split("_")
+        if len(args) == 3:
+            return MGPose(int(args[1]), int(args[2]))
+        else:
+            return MGPose(-1, -1)
+
+    def callback_pa_agent_intentions(self, msg:BDIPlanExecutionInfoMin):
+        if self.get_parameter("show_agent_view").value == 'plastic_agent' or self.get_parameter("show_agent_view").value == 'paper_agent':
+            #self.get_logger().info("Current info from /{}/current_intentions:".format(self.get_parameter("show_agent_view").value))
+            target_pose = MGPose(-1, -1)
+            for target_belief in msg.target_value:
+                if target_belief.name == 'in' and target_belief.params[0] == self.get_parameter("show_agent_view").value:
+                    target_pose = self.extract_pose_from_cell_name(target_belief.params[1])
+                    self.get_logger().info("Trying to get to ({},{})".format(target_pose.x, target_pose.y))
+            
+            committed_poses = []
+            not_committed_poses = []
+            waiting_plans_poses = []
+            #self.get_logger().info("Via the following steps:")
+            for aex_min in msg.actions_exec_info:
+                if aex_min.name == 'move' and aex_min.args[0] == self.get_parameter("show_agent_view").value:
+                    next_pose = self.extract_pose_from_cell_name(aex_min.args[2])
+                    if aex_min.status == BDIActionExecutionInfoMin().RUNNING or aex_min.status == BDIActionExecutionInfoMin().WAITING:
+                        if aex_min.committed:
+                            committed_poses.append(next_pose)
+                            #self.get_logger().info("COMM - {}: ({},{})".format(aex_min.status, next_pose.x, next_pose.y))
+                        else:
+                            not_committed_poses.append(next_pose)
+                            #self.get_logger().info("NO_C: - {}: ({},{})".format(aex_min.status, next_pose.x, next_pose.y))
+                    elif aex_min.status == BDIActionExecutionInfoMin().UNKNOWN:
+                        waiting_plans_poses.append(next_pose)
+
+
+            self.tk_litter_world_thread_.update_pa_trajectory(MGMoveTrajectory(target_pose, committed_poses, not_committed_poses, waiting_plans_poses))
+
     def callback_cmd_plastic_agent_move(self, goal_handle):
-        performed = self.tk_litter_world_thread_.move_agent(PLASTIC_AGENT_CELL, goal_handle.request.cmd) #TODO feedback 
+        accepted, step_num = self.tk_litter_world_thread_.move_agent(PLASTIC_AGENT_CELL, goal_handle.request.cmd) 
+
+        if accepted:
+            feedback_msg = CmdPose.Feedback()
+            feedback_msg.progress = 0.5
+            goal_handle.publish_feedback(feedback_msg)
+            time.sleep(self.get_upd_interval()/1000)
+
         goal_handle.succeed()
         result = CmdPose.Result()
-        result.performed = performed
+        result.performed = accepted
+        result.step_num = step_num
         return result
 
     def callback_cmd_paper_agent_move(self, goal_handle):
-        performed = self.tk_litter_world_thread_.move_agent(PAPER_AGENT_CELL, goal_handle.request.cmd) #TODO feedback 
+        accepted, step_num = self.tk_litter_world_thread_.move_agent(PAPER_AGENT_CELL, goal_handle.request.cmd) 
+
+        if accepted:
+            feedback_msg = CmdPose.Feedback()
+            feedback_msg.progress = 0.5
+            goal_handle.publish_feedback(feedback_msg)
+            time.sleep(self.get_upd_interval()/1000)
+
         goal_handle.succeed()
         result = CmdPose.Result()
-        result.performed = performed
+        result.performed = accepted
+        result.step_num = step_num
         return result
 
     def callback_cmd_plastic_agent_hold(self, goal_handle):
@@ -102,7 +255,11 @@ class LitterWorldROS2Controller(Node):
 
     def litter_world_status_cb(self):
         world_grid, litter_grid = self.tk_litter_world_thread_.get_litter_world_status()
-        
+        if world_grid == None or litter_grid == None:
+            return
+
+        free_cells = []
+
         # use world grid to map agent, bins, static and dynamic obstacles
         litter_world_grid_msg = GridStatus()
         for i in range(0, len(world_grid)):
@@ -110,6 +267,9 @@ class LitterWorldROS2Controller(Node):
             litter_world_row_msg.index = i
             for j in range(0, len(world_grid[0])):
                 litter_world_row_msg.cells.append(world_grid[i][j])
+                if world_grid[i][j] == EMPTY_CELL:
+                    free_cells.append(MGPose(i,j))
+
             litter_world_grid_msg.rows.append(litter_world_row_msg)
         
         # use litter_grid to map plastic and paper litter poses
@@ -125,31 +285,73 @@ class LitterWorldROS2Controller(Node):
 
         self.litter_world_status_publisher_.publish(litter_world_grid_msg)
 
+        # if len(free_cells) > 2:
+        #     rnd_index1 = random.randint(0, len(free_cells)-1)
+        #     rnd_index2 = random.randint(0, len(free_cells)-1)
+        #     while rnd_index2 != rnd_index1:
+        #         rnd_index2 = random.randint(0, len(free_cells)-1)
+
+        #     rnd_pose1 = free_cells[rnd_index1]
+        #     pla_agent_patrol_msg = Desire()
+        #     pla_agent_patrol_msg.name = 'patrolc_{}_{}'.format(rnd_pose1.x, rnd_pose1.y)
+        #     pla_agent_patrol_msg.priority = 0.4
+        #     pla_agent_patrol_msg.deadline = 48.0
+        #     target_pose_belief = Belief()
+        #     target_pose_belief.name = 'in'
+        #     target_pose_belief.pddl_type = 2
+        #     target_pose_belief.params = ['plastic_agent', 'c_{}_{}'.format(rnd_pose1.x, rnd_pose1.y)]
+        #     pla_agent_patrol_msg.value = [target_pose_belief]
+        #     self.plastic_agent_patrol_desire_add.publish(pla_agent_patrol_msg)
+
+        #     rnd_pose2 = free_cells[rnd_index2]
+        #     pap_agent_patrol_msg = Desire()
+        #     pap_agent_patrol_msg.name = 'patrolc_{}_{}'.format(rnd_pose2.x, rnd_pose2.y)
+        #     pap_agent_patrol_msg.priority = 0.4
+        #     pap_agent_patrol_msg.deadline = 48.0
+        #     target_pose_belief = Belief()
+        #     target_pose_belief.name = 'in'
+        #     target_pose_belief.pddl_type = 2
+        #     target_pose_belief.params = ['paper_agent', 'c_{}_{}'.format(rnd_pose2.x, rnd_pose2.y)]
+        #     pap_agent_patrol_msg.value = [target_pose_belief]
+        #     self.paper_agent_patrol_desire_add.publish(pap_agent_patrol_msg)
+            
+
 
 def main(args=None):
     rclpy.init(args=args) # first line to be written in any ROS2 .py node
     
     # Create rclpy node to handle ROS2 "frontend"
     node = LitterWorldROS2Controller()
-    upd_interval = node.get_upd_interval()
     init_world_json = node.get_init_world_json()
+    tk_litter_world_thread = None
 
     if init_world_json != None:
-        # Create new thread to handle tk app
-        tk_litter_world_thread = TkLitterWorldThread(init_world_json, upd_interval)
+        world_setup = {
+            "upd_interval": node.get_upd_interval(),
+            "world_size_px": node.get_world_size_px(),
+            "init_world_json": init_world_json,
+            "show_agent_view": node.get_show_agent_view(),
+        }
         
-        node.init_ros2_controller(tk_litter_world_thread)
 
-        # Start new Threads
-        tk_litter_world_thread.start()
+        if world_setup["init_world_json"] != None:
+            # Create new thread to handle tk app
+            tk_litter_world_thread = TkLitterWorldThread(world_setup)
+            
+            node.init_ros2_controller(tk_litter_world_thread)
 
-        mt_executor = MultiThreadedExecutor()
-        mt_executor.add_node(node)
-        mt_executor.spin()# allow node to continue to be alive
-        #rclpy.spin(node) 
+            # Start new Threads
+            tk_litter_world_thread.start()
+
+            mt_executor = MultiThreadedExecutor()
+            mt_executor.add_node(node)
+            mt_executor.spin()# allow node to continue to be alive
+            #rclpy.spin(node) 
 
     rclpy.shutdown() # last line of any ROS2 .py node
-    tk_litter_world_thread.join()
+    
+    if tk_litter_world_thread != None:
+        tk_litter_world_thread.join()
 
 if __name__ == "__main__":
     main()

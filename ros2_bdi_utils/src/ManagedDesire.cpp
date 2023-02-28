@@ -214,19 +214,69 @@ bool ManagedDesire::isFulfilled(const set<ManagedBelief>& bset)
     return true;//all target conditions already met    
 }
 
+// return true if otherDesire has same priority and desire group + its value is contained within the value of the called MG Desire
+bool ManagedDesire::baseMatch(const ManagedDesire& otherDesire)
+{
+    if(priority_ != otherDesire.getPriority() || desire_group_ != otherDesire.getDesireGroup())
+        return false;
+    
+    for(ManagedBelief mb1 : otherDesire.getValue())
+    {
+        bool found = false;    
+        for(ManagedBelief mb2 : value_)
+            if(mb1 == mb2){found = true; break;}
+        if(!found)
+            return false;
+    }
+
+    return true;
+}
+
+bool ManagedDesire::baseBoostingConditionsMatch(const ManagedDesire& otherDesire)
+{
+    if(name_.find(otherDesire.getName()) == string::npos)
+        return false;
+
+    if(priority_ != otherDesire.getPriority())
+        return false;
+    
+    
+    if(desire_group_ != otherDesire.getDesireGroup())
+        return false;
+    
+    return true;
+}
+
+vector<ManagedBelief> ManagedDesire::computeBoostingValue(const ManagedDesire& otherDesire)
+{
+    vector<ManagedBelief> boostingValue;
+    if(!baseBoostingConditionsMatch(otherDesire))
+        return boostingValue; // no match, return empty array
+
+    //base checks passed, try to compute additional boosting value
+    for(ManagedBelief mb : otherDesire.getValue())
+    {
+        bool foundInOriginal = false;
+        for(ManagedBelief mbOr : getValue())
+            if(mb == mbOr)
+            {
+                foundInOriginal = true;
+                break;
+            }
+        
+        if(!foundInOriginal)
+            boostingValue.push_back(mb);
+    }
+
+    return boostingValue;
+}
+
 // return true if otherDesire is augmented to the current one
 bool ManagedDesire::boostDesire(const ManagedDesire& otherDesire)
 {
-    if(otherDesire.getName() != otherDesire.getName())
-        return false;
-
-    if(otherDesire.getPriority() != otherDesire.getPriority())
-        return false;
-    
-    if(otherDesire.getDesireGroup() != otherDesire.getDesireGroup())
-        return false;
-    
-    //base checks passed, try to merge the two desires
+    vector<ManagedBelief> valueToBeAdded = computeBoostingValue(otherDesire);
+    if(valueToBeAdded.size() == 0)
+        return false; // either base checks did not pass or they did but no additional value after filtering out original desire
 
     deadline_ += otherDesire.getDeadline(); // sum two target deadlines
 
@@ -236,8 +286,9 @@ bool ManagedDesire::boostDesire(const ManagedDesire& otherDesire)
     // merge context conditions // TODO improve and check for UNSAT
     context_ = context_.mergeMGConditionsDNF(otherDesire.getContext());
 
+
     // boost target
-    for(ManagedBelief mb : otherDesire.getValue())
+    for(ManagedBelief mb : valueToBeAdded)
         value_.push_back(mb);
 
     // merge rollback beliefs

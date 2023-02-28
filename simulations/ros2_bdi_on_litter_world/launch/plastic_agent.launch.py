@@ -9,7 +9,6 @@ sys.path.append(ros2_bdi_bringup_dir + '/launch/')
 from bdi_agent import AgentLaunchDescription
 from bdi_agent_skills import AgentAction
 from bdi_agent_skills import AgentSensor
-from webots_ros2_driver.webots_launcher import WebotsLauncher
 
 
 def generate_launch_description():
@@ -60,8 +59,14 @@ def generate_launch_description():
         specific_params=[
             {"init_sleep": 4},
             {"sensing_freq": 1.0},
-            {"detection_depth": 2}
+            {"detection_depth": 2},
+            {"should_patrol": True}
         ])
+
+    pmode = 'online'
+    reschedule_policy = 'NO_PREEMPT'
+    if pmode == 'online':
+        reschedule_policy = 'CLEAN_PREEMPT'
 
     plastic_agent_ld = AgentLaunchDescription(
         agent_id=PLASTIC_AGENT_ID,
@@ -69,14 +74,18 @@ def generate_launch_description():
         init_params={
             'pddl_file': os.path.join(bdi_on_litterworld_share_dir, 'pddl', 'recycling-agent-domain.pddl'),
             'init_bset': os.path.join(bdi_on_litterworld_share_dir, 'launch', 'plastic_agent_init', 'init_bset.yaml'),
-            'init_reactive_rules_set': os.path.join(bdi_on_litterworld_share_dir, 'launch', 'plastic_agent_init', 'init_rrules.yaml'),
-            'comp_plan_tries': 2,
+            'init_reactive_rules_set': os.path.join(bdi_on_litterworld_share_dir, 'launch', 'plastic_agent_init', 'init_rrules.yaml'.format(pmode)),
+            'planner': 'JAVAFF',
+            'comp_plan_tries': 4,
             'exec_plan_tries': 4,
-            'planning_mode':'offline',
-            'reschedule_policy': 'NO_PREEMPT',
-            'search_interval': 400,
+            'planning_mode':pmode,
+            'reschedule_policy': reschedule_policy,
+            'search_interval': 100,
+            # 'max_pplan_size': 32,
             'min_commit_steps': 1,
-            'debug_log_active': ['scheduler']
+            #'sim_to_n': 3,
+            'max_null_search_intervals': 16,
+            'debug_log_active': ['javaff', 'scheduler', 'event_listener']
         },
         actions=[plastic_agent_move, plastic_agent_pickup, plastic_agent_recycle],
         sensors=[load_map_sensor, agent_area_sensor],

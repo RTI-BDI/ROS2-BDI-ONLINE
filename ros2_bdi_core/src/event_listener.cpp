@@ -15,6 +15,7 @@
 using ros2_bdi_interfaces::msg::Belief;
 using ros2_bdi_interfaces::msg::BeliefSet;
 using ros2_bdi_interfaces::msg::Desire;
+using ros2_bdi_interfaces::msg::DesireSet;
 using ros2_bdi_interfaces::msg::LifecycleStatus;
 
 using BDIManaged::ManagedBelief;
@@ -36,6 +37,7 @@ EventListener::EventListener()
     this->declare_parameter(PARAM_PLANNING_MODE, PLANNING_MODE_OFFLINE);
 
     sel_planning_mode_ = this->get_parameter(PARAM_PLANNING_MODE).as_string() == PLANNING_MODE_OFFLINE? OFFLINE : ONLINE;
+    std::cout << "SELECTED PLANNING_MODE " << this->get_parameter(PARAM_PLANNING_MODE).as_string() << " " << std::to_string(sel_planning_mode_) << std::flush << std::endl;
     this->undeclare_parameter(PARAM_PLANNING_MODE);
 }
 
@@ -83,6 +85,11 @@ bool EventListener::init()
     belief_set_subscription_ = this->create_subscription<BeliefSet>(
                 BELIEF_SET_TOPIC, qos_reliable,
                 bind(&EventListener::updBeliefSetCallback, this, _1));
+    
+    //Receive desire set update notification to keep the event listener desire set mirror up to date
+    desire_set_subscription_ = this->create_subscription<DesireSet>(
+                DESIRE_SET_TOPIC, qos_reliable,
+                bind(&EventListener::updDesireSetCallback, this, _1));
 
     // add/del belief publishers init.
     add_belief_publisher_ = this->create_publisher<Belief>(ADD_BELIEF_TOPIC, qos_reliable);
@@ -90,6 +97,7 @@ bool EventListener::init()
 
     // add/del desire publishers init.
     add_desire_publisher_ = this->create_publisher<Desire>(ADD_DESIRE_TOPIC, qos_reliable);
+    boost_desire_publisher_ = this->create_publisher<Desire>(BOOST_DESIRE_TOPIC, qos_reliable);
     del_desire_publisher_ = this->create_publisher<Desire>(DEL_DESIRE_TOPIC, qos_reliable);
 
     return true;
@@ -149,7 +157,7 @@ void EventListener::updBeliefSetCallback(const BeliefSet::SharedPtr msg)
         }
     }       
 
-    if(belief_set_upd)
+    if(belief_set_upd || desire_set_.size() == 0)// second case is to avoid that some desire generation function rules are not pushed when belief set does not change
     {
         //there has been an update //TODO improve the check above and the assignment below :-(
         belief_set_ = new_belief_set;
@@ -281,7 +289,7 @@ void EventListener::apply_rule(const BDIManaged::ManagedReactiveRule& reactive_r
                 add_belief_publisher_->publish(bset_upd.second.toBelief());//add belief to bset if it is NOT there
             }
         }
-        else
+        else if (bset_upd.first == ReactiveOp::DEL)
         {
             if(belief_set_.count(bset_upd.second) > 0)
             {
@@ -294,20 +302,44 @@ void EventListener::apply_rule(const BDIManaged::ManagedReactiveRule& reactive_r
 
     //Desire set updates
     for(auto dset_upd : reactive_rule.getDesireRules())
-    {
+    {       
         if(dset_upd.first == ReactiveOp::ADD)
         {
-            if(this->get_parameter(PARAM_DEBUG).as_bool())
-                RCLCPP_INFO(this->get_logger(), "Adding desire " + dset_upd.second.getName());
+            if(desire_set_.count(dset_upd.second) == 0)
+            {
+                if(this->get_parameter(PARAM_DEBUG).as_bool())
+                    RCLCPP_INFO(this->get_logger(), "Adding desire " + dset_upd.second.getNameValue());
 
-            add_desire_publisher_->publish(dset_upd.second.toDesire());//add desire to dset 
+                add_desire_publisher_->publish(dset_upd.second.toDesire());//add desire to dset 
+            }
         }
-        else
+        else if (dset_upd.first == ReactiveOp::BOOST)
         {
-            if(this->get_parameter(PARAM_DEBUG).as_bool())
-                RCLCPP_INFO(this->get_logger(), "Deleting desire " + dset_upd.second.getName());
+            bool doIPub = true; // do i publish??? either no desire like this in the desire set or it make sense for boosting (some boosted value in a desire)
+            for(auto md : desire_set_)
+                if(md.baseMatch(dset_upd.second))//already a desire with same exact match (priority + group + value contained)
+                {
+                    doIPub = false;
+                    break;
+                }
 
-            del_desire_publisher_->publish(dset_upd.second.toDesire());//del desire to dset
+            if(doIPub)
+            {
+                if(this->get_parameter(PARAM_DEBUG).as_bool())
+                    RCLCPP_INFO(this->get_logger(), "Boosting desire " + dset_upd.second.getNameValue());
+
+                boost_desire_publisher_->publish(dset_upd.second.toDesire());//del desire to dset
+            }
+        }
+        else if (dset_upd.first == ReactiveOp::DEL)
+        {
+            if(desire_set_.count(dset_upd.second) > 0)
+            {
+                if(this->get_parameter(PARAM_DEBUG).as_bool())
+                    RCLCPP_INFO(this->get_logger(), "Deleting desire " + dset_upd.second.getNameValue());
+
+                del_desire_publisher_->publish(dset_upd.second.toDesire());//del desire to dset
+            }
         }
     }
 }

@@ -55,26 +55,38 @@ class LoadMapSensor : public Sensor
                                     bsetAddAll.value.push_back(b);
                                 // std::cout << "sensing " << freeCellsBeliefs.size() << std::flush << std::endl;
 
-                                Belief bPlaBin = getBeliefPrototype("plastic_bin").value();
-                                bPlaBin.name = PLASTIC_BIN_NAME;
-                                bsetAddAll.value.push_back(bPlaBin);
-                                // std::cout << "sensing " << bPlaBin.name << std::flush << std::endl;
+                                if(robot_name_ == "plastic_agent")
+                                {
+                                    Belief bPlaBin = getBeliefPrototype("plastic_bin").value();
+                                    bPlaBin.name = PLASTIC_BIN_NAME;
+                                    bsetAddAll.value.push_back(bPlaBin);
+                                    // std::cout << "sensing " << bPlaBin.name << std::flush << std::endl;
+                                }
 
-                                Belief bPapBin = getBeliefPrototype("paper_bin").value();
-                                bPapBin.name = PAPER_BIN_NAME;
-                                bsetAddAll.value.push_back(bPapBin);
-
-                                // std::cout << "sensing " << bPapBin.name << std::flush << std::endl;
+                                if(robot_name_ == "paper_agent")
+                                {
+                                    Belief bPapBin = getBeliefPrototype("paper_bin").value();
+                                    bPapBin.name = PAPER_BIN_NAME;
+                                    bsetAddAll.value.push_back(bPapBin);
+                                    // std::cout << "sensing " << bPapBin.name << std::flush << std::endl;
+                                }
 
                                 vector<Belief> binPoses = (extractBinPoses(msg));
                                 for(Belief b : binPoses)
                                     bsetAddAll.value.push_back(b);
                                 
                                 // std::cout << "sensing " << binPoses.size() << " binPoses" << std::flush << std::endl;
-                                senseAll(bsetAddAll, UpdOperation::ADD);
+                                if(belief_set_.value.size() < bsetAddAll.value.size())//still need to load all static info
+                                    senseAll(bsetAddAll, UpdOperation::ADD);
 
-                                if(belief_set_.value.size() >= bsetAddAll.value.size())//loaded all static info -> can quit
-                                    rclcpp::shutdown();
+                                else // loaded all static info -> can quit
+                                {
+                                    Belief bMapLoaded = getBeliefPrototype("map_loaded").value();
+                                    sense(bMapLoaded, UpdOperation::ADD);
+                                    for(auto b : belief_set_.value)
+                                        if(b.name == "map_loaded")//map loaded and agent knows it->can quit
+                                            rclcpp::shutdown();
+                                }
                             }
                         });
         }
@@ -138,18 +150,20 @@ class LoadMapSensor : public Sensor
                 for(uint16_t i = 0; i<grid->rows.size(); i++)
                     for(uint16_t j = 0; j<grid->rows[i].cells.size(); j++)
                     {   
-                        if(grid->rows[i].cells[j] == GridRowStatus().PLASTIC_BIN_CELL)
+                        if(robot_name_ == "plastic_agent" && grid->rows[i].cells[j] == GridRowStatus().PLASTIC_BIN_CELL)
                         {
                             Belief b = bproto.value();
                             b.params = {PLASTIC_BIN_NAME,buildCellName(i, j)};
                             bin_poses_beliefs.push_back(b);
+                            break;
                         }
 
-                        if(grid->rows[i].cells[j] == GridRowStatus().PAPER_BIN_CELL)
+                        if(robot_name_ == "paper_agent" && grid->rows[i].cells[j] == GridRowStatus().PAPER_BIN_CELL)
                         {
                             Belief b = bproto.value();
                             b.params = {PAPER_BIN_NAME,buildCellName(i, j)};
                             bin_poses_beliefs.push_back(b);
+                            break;
                         }
                     }
             }
@@ -200,13 +214,16 @@ int main(int argc, char ** argv)
   Belief b_proto_free = (ManagedBelief::buildMBPredicate("free", {ManagedParam{"?c", "cell"}})).toBelief();
   Belief b_proto_plastic_bin = (ManagedBelief::buildMBInstance("?pb", "plastic_bin")).toBelief();
   Belief b_proto_paper_bin = (ManagedBelief::buildMBInstance("?pb", "paper_bin")).toBelief();
-  Belief b_proto_bin_pose = (ManagedBelief::buildMBPredicate("bin_pose", {ManagedParam{"?b", "bin"}, ManagedParam{"?c", "cell"}})).toBelief();
+  Belief b_proto_bin_pose = (ManagedBelief::buildMBPredicate("bin_pose", {ManagedParam{"?b", "plastic_bin"}, ManagedParam{"?c", "cell"}})).toBelief();
+  Belief b_proto_map_loaded = (ManagedBelief::buildMBPredicate("map_loaded", {})).toBelief();
   vector<Belief> proto_beliefs;
   proto_beliefs.push_back(b_proto_near);
   proto_beliefs.push_back(b_proto_free);
   proto_beliefs.push_back(b_proto_plastic_bin);
   proto_beliefs.push_back(b_proto_paper_bin);
   proto_beliefs.push_back(b_proto_bin_pose);
+  proto_beliefs.push_back(b_proto_map_loaded);
+  
   auto node = std::make_shared<LoadMapSensor>("load_map_sensor", proto_beliefs);
   rclcpp::spin(node);
 

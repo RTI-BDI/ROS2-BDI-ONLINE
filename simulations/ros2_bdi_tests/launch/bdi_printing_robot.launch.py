@@ -76,12 +76,14 @@ def generate_launch_description():
             'init_dset': bdi_tests_share_dir + '/launch/init_printing_floor/init_dset.yaml',
             'init_reactive_rules_set': bdi_tests_share_dir + '/launch/init_printing_floor/init_rrules_ant_fail.yaml',
             #'init_reactive_rules_set': bdi_tests_share_dir + '/launch/init_printing_floor/init_rrules_impr_sol.yaml',
-            'comp_plan_tries': 2,
+            'comp_plan_tries': 6,
             'exec_plan_tries': 4,
-            'planning_mode':'offline',
-            'search_interval': 150,
+            'planning_mode':'online',
+            'reschedule_policy': 'NO_PREEMPT',
+            'search_interval': 100,
             'min_commit_steps': 2,
-            'debug_log_active': []
+            #'sim_to_n': 3,
+            'debug_log_active': ['javaff', 'scheduler']
         },
         actions=[pf_action_move, pf_action_docking, pf_action_printing, pf_action_undocking, pf_action_recharge, pf_action_unload_printed_docs],
         sensors=[],

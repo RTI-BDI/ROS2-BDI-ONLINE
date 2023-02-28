@@ -1,3 +1,4 @@
+from math import inf
 from launch_ros.actions import Node
 
 # Bringup parameters
@@ -95,10 +96,10 @@ def build_Scheduler(namespace, agent_id, init_params):
     # check below for passed values in init
 
     if RESCHEDULE_POLICY_PARAM in init_params:
-        if (init_params[RESCHEDULE_POLICY_PARAM] == RESCHEDULE_POLICY_VAL_IF_EXEC or init_params[RESCHEDULE_POLICY_PARAM] == RESCHEDULE_POLICY_VAL_NO_IF_EXEC ):
+        if (init_params[RESCHEDULE_POLICY_PARAM] in [RESCHEDULE_POLICY_VAL_IF_EXEC, RESCHEDULE_POLICY_VAL_IF_EXEC_CLEAN, RESCHEDULE_POLICY_VAL_NO_IF_EXEC] ):
             reschedule_policy = init_params[RESCHEDULE_POLICY_PARAM]
         else:
-            log_automatic_set(RESCHEDULE_POLICY_PARAM, reschedule_policy) # reschedule policy set to default because of invalid value (accepted: {"PREEMPT", "NO_PREEMPT"})
+            log_automatic_set(RESCHEDULE_POLICY_PARAM, reschedule_policy) 
 
     if COMP_PLAN_TRIES_PARAM in init_params and isinstance(init_params[COMP_PLAN_TRIES_PARAM], int) and init_params[COMP_PLAN_TRIES_PARAM] >= 1:
         comp_plan_tries = init_params[COMP_PLAN_TRIES_PARAM]
@@ -125,11 +126,17 @@ def build_Scheduler(namespace, agent_id, init_params):
         planning_mode = init_params[PLANNING_MODE_PARAM] if init_params[PLANNING_MODE_PARAM] in ['offline', 'online'] else 'offline'
 
     interval_search_ms = 500
+    max_pplan_size = 32000
+    max_empty_search_intervals = 16
+
     if planning_mode == 'online' and SEARCH_INTERVAL_MS_PARAM in init_params and isinstance(init_params[SEARCH_INTERVAL_MS_PARAM], int):
         interval_search_ms = init_params[SEARCH_INTERVAL_MS_PARAM]
         interval_search_ms = interval_search_ms if interval_search_ms >= 100 else 100
     
-    max_empty_search_intervals = 16
+    if planning_mode == 'online' and MAX_PPLAN_SIZE_PARAM in init_params and isinstance(init_params[MAX_PPLAN_SIZE_PARAM], int):
+        max_pplan_size = init_params[MAX_PPLAN_SIZE_PARAM]
+        max_pplan_size = max_pplan_size if max_pplan_size > 0 else 32000
+    
     if planning_mode == 'online' and MAX_EMPTY_SEARCH_INTERVALS_PARAM in init_params and isinstance(init_params[MAX_EMPTY_SEARCH_INTERVALS_PARAM], int):
         max_empty_search_intervals = init_params[MAX_EMPTY_SEARCH_INTERVALS_PARAM]
         max_empty_search_intervals = max_empty_search_intervals if max_empty_search_intervals > 0 else 1
@@ -149,6 +156,7 @@ def build_Scheduler(namespace, agent_id, init_params):
             {AUTOSUBMIT_CONTEXT_PARAM: autosubmit_context}, 
             {PLANNING_MODE_PARAM: planning_mode},
             {SEARCH_INTERVAL_MS_PARAM: interval_search_ms},
+            {MAX_PPLAN_SIZE_PARAM: max_pplan_size},
             {MAX_EMPTY_SEARCH_INTERVALS_PARAM: max_empty_search_intervals},
             {DEBUG_PARAM: debug}
         ])
